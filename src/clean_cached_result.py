@@ -37,64 +37,69 @@ def clean_cached_result(MAX_KEEP_DAYS, g_params):  # {{{
         return 1
 
     md5listfile = f"{path_log}/cache_to_delete.md5list"
-    con = sqlite3.connect(tmpdb)
-    webcom.loginfo(f"output the outdated md5 list to {md5listfile}", logfile)
+    try: 
+        con = sqlite3.connect(tmpdb)
+        webcom.loginfo(f"output the outdated md5 list to {md5listfile}", logfile)
 
-    tablename = "data"
+        tablename = "data"
 
-    with con:
-        cur = con.cursor()
-        fpout = open(md5listfile, "w")
-        nn_mag = cur.execute(f"SELECT md5, date_finish FROM {tablename}")
-        cnt = 0
-        chunk_size = 1000
-        while True:
-            result = nn_mag.fetchmany(chunk_size)
-            if not result:
-                break
-            else:
-                for row in result:
-                    cnt += 1
-                    md5_key = row[0]
-                    finish_date_str = row[1]
-                    finish_date = webcom.datetime_str_to_time(finish_date_str)
-                    current_time = datetime.now(timezone(TZ))
-                    timeDiff = current_time - finish_date
-                    if timeDiff.days > MAX_KEEP_DAYS:
-                        fpout.write(f"{md5_key}\n")
-        fpout.close()
+        with con:
+            cur = con.cursor()
+            fpout = open(md5listfile, "w")
+            nn_mag = cur.execute(f"SELECT md5, date_finish FROM {tablename}")
+            cnt = 0
+            chunk_size = 1000
+            while True:
+                result = nn_mag.fetchmany(chunk_size)
+                if not result:
+                    break
+                else:
+                    for row in result:
+                        cnt += 1
+                        md5_key = row[0]
+                        finish_date_str = row[1]
+                        finish_date = webcom.datetime_str_to_time(finish_date_str)
+                        current_time = datetime.now(timezone(TZ))
+                        timeDiff = current_time - finish_date
+                        if timeDiff.days > MAX_KEEP_DAYS:
+                            fpout.write(f"{md5_key}\n")
+            fpout.close()
 
-        # delete cached result folder and delete the record
-        webcom.loginfo("Delete cached result folder and delete the record", logfile)
+            # delete cached result folder and delete the record
+            webcom.loginfo("Delete cached result folder and delete the record", logfile)
 
-        hdl = myfunc.ReadLineByBlock(md5listfile)
-        lines = hdl.readlines()
-        cnt = 0
-        while lines is not None:
-            for line in lines:
-                line = line.strip()
-                if line != "":
-                    cnt += 1
-                    md5_key = line
-
-                    subfoldername = md5_key[:2]
-                    cachedir = os.path.join(path_cache, subfoldername, md5_key)
-                    zipfile_cache = cachedir + ".zip"
-                    if os.path.exists(zipfile_cache):
-                        try:
-                            os.remove(zipfile_cache)
-                            webcom.loginfo(f"rm {zipfile_cache}", logfile)
-                            cmd_d = f"DELETE FROM {tablename} WHERE md5 = '{md5_key}'"
-                            cur.execute(cmd_d)
-                        except Exception as e:
-                            webcom.loginfo(f"Failed to delete with errmsg {e}", errfile)
-                            pass
-
+            hdl = myfunc.ReadLineByBlock(md5listfile)
             lines = hdl.readlines()
-        hdl.close()
+            cnt = 0
+            while lines is not None:
+                for line in lines:
+                    line = line.strip()
+                    if line != "":
+                        cnt += 1
+                        md5_key = line
+                        subfoldername = md5_key[:2]
+                        cachedir = os.path.join(path_cache, subfoldername, md5_key)
+                        zipfile_cache = cachedir + ".zip"
+                        if os.path.exists(zipfile_cache):
+                            try:
+                                os.remove(zipfile_cache)
+                                webcom.loginfo(f"rm {zipfile_cache}", logfile)
+                                cmd_d = f"DELETE FROM {tablename} WHERE md5 = '{md5_key}'"
+                                cur.execute(cmd_d)
+                            except Exception as e:
+                                webcom.loginfo(f"Failed to delete with errmsg {e}", errfile)
+                                pass
 
-        webcom.loginfo(f"VACUUM the database {tmpdb}", logfile)
-        cur.execute("VACUUM")
+                lines = hdl.readlines()
+            hdl.close()
+
+            webcom.loginfo(f"VACUUM the database {tmpdb}", logfile)
+            cur.execute("VACUUM")
+    except Exception as e:
+        webcom.loginfo(f"Failed to clean cached result with {e}", g_params['gen_logfile'])
+    finally:
+        if con is not None:
+            con.close() 
 
     # copy back
     webcom.loginfo(f"cp tmpdb {tmpdb} -> db {db}", logfile)
@@ -115,7 +120,7 @@ def clean_cached_result(MAX_KEEP_DAYS, g_params):  # {{{
 # }}}
 
 
-def main():  # {{{
+def main(g_params):  # {{{
     """main procedure"""
     parser = argparse.ArgumentParser(
             description='Clean outdated cached results',
@@ -143,11 +148,11 @@ Examples:
               file=sys.stderr)
         return 1
 
-    g_params = {}
     g_params.update(webcom.LoadJsonFromFile(jsonfile))
 
     lockname = f"{rootname_progname}.lock"
     lock_file = os.path.join(g_params['path_log'], lockname)
+    g_params['lockfile'] = lock_file
     fp = open(lock_file, 'w')
     try:
         fcntl.lockf(fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -165,5 +170,23 @@ Examples:
                            g_params['gen_logfile'])
     return status
 
+def InitGlobalParameter():#{{{
+    g_params = {}
+    g_params['lockfile'] = ""
+    return g_params
+#}}}
+
 if __name__ == '__main__':
-    sys.exit(main())
+    g_params = InitGlobalParameter()
+    try:
+        status = main(g_params) 
+    except Exception as e:
+        webcom.loginfo("Error occurred: " + str(e), g_params['gen_logfile'])
+        status = 1
+    finally:
+        if os.path.exists(g_params['lockfile']):
+            try:
+                os.remove(g_params['lockfile'])
+            except:
+                webcom.loginfo("Failed to delete lockfile %s\n" % (g_params['lockfile']), g_params['gen_logfile'])  
+    sys.exit(status)
