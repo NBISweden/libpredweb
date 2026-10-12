@@ -770,7 +770,8 @@ def GetResult(jobid, g_params):  # {{{
     if os.path.exists(cnttry_idx_file):
         with open(cnttry_idx_file, 'r') as fpin:
             try:
-                cntTryDict = json.load(fpin)
+                # json stores keys as str, convert them back to int
+                cntTryDict = {int(k): v for k, v in json.load(fpin).items()}
             except Exception:
                 cntTryDict = {}
 
@@ -871,20 +872,19 @@ def GetResult(jobid, g_params):  # {{{
         subfoldername_this_seq = f"seq_{origIndex}"
         outpath_this_seq = os.path.join(outpath_result, subfoldername_this_seq)
 
-        try:
-            myclient = myclientDict[node]
-        except KeyError:
+        myclient = myclientDict.get(node, None)
+        rtValue = []
+        if myclient is None:
             if 'DEBUG' in g_params and g_params['DEBUG']:
-                webcom.loginfo("DEBUG: node (%s) not found in myclientDict, ignore"%(node), gen_logfile)
-            keep_queueline_list.append(line)
-            continue
-        try:
-            rtValue = myclient.service.checkjob(remote_jobid)
-        except Exception as e:
-            msg = "checkjob(%s) at node %s failed with errmsg %s"%(remote_jobid, node, str(e))
-            webcom.loginfo(msg, gen_logfile)
-            rtValue = []
-            pass
+                webcom.loginfo("DEBUG: node (%s) not found in myclientDict"%(node), gen_logfile)
+        else:
+            try:
+                rtValue = myclient.service.checkjob(remote_jobid)
+            except Exception as e:
+                msg = "checkjob(%s) at node %s failed with errmsg %s"%(remote_jobid, node, str(e))
+                webcom.loginfo(msg, gen_logfile)
+                rtValue = []
+                pass
         isSuccess = False
         isFinish_remote = False
         status = ""
@@ -1069,17 +1069,29 @@ def GetResult(jobid, g_params):  # {{{
                                    f" MAX_TIME_IN_REMOTE_QUEUE ({g_params['MAX_TIME_IN_REMOTE_QUEUE']})"
                                    f" for remote_jobid ({remote_jobid})"
                                    f" with status ({status})", gen_logfile)
-            if (
-                    status != "Running"
-                    and status != ""
-                    and time_in_remote_queue > g_params['MAX_TIME_IN_REMOTE_QUEUE']):
+            # Apply the timeout regardless of the remote status, the remote
+            # node may be unreachable (status == "") or the job may be stuck
+            # in "Running" forever after the remote node crashed.
+            if time_in_remote_queue > g_params['MAX_TIME_IN_REMOTE_QUEUE']:
+                webcom.loginfo(f"{jobid}: seq_{origIndex} has been in the remote queue"
+                               f" for {int(time_in_remote_queue)} seconds"
+                               f" (remote_jobid={remote_jobid}, node={node},"
+                               f" status=\"{status}\"), resubmit it", gen_logfile)
                 # delete the remote job on the remote server
-                try:
-                    rtValue2 = myclient.service.deletejob(remote_jobid)
-                except Exception as e:
-                    webcom.loginfo("Failed to run myclient.service.deletejob(%s) on node %s with msg %s"%(remote_jobid, node, str(e)), gen_logfile)
-                    rtValue2 = []
-                    pass
+                if myclient is not None:
+                    try:
+                        rtValue2 = myclient.service.deletejob(remote_jobid)
+                    except Exception as e:
+                        webcom.loginfo("Failed to run myclient.service.deletejob(%s) on node %s with msg %s"%(remote_jobid, node, str(e)), gen_logfile)
+                        rtValue2 = []
+                        pass
+                # put it back to torun_idx_file so that it will be resubmitted
+                cnttry = cntTryDict.get(int(origIndex), 1)
+                if cnttry < g_params['MAX_RESUBMIT']:
+                    resubmit_idx_list.append(str(origIndex))
+                    cntTryDict[int(origIndex)] = cnttry+1
+                else:
+                    failed_idx_list.append(str(origIndex))
             else:
                 keep_queueline_list.append(line)
 # }}}
